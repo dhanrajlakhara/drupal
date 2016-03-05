@@ -1,0 +1,7 @@
+name = School Audit
+description = Implements School Audit.
+package = Custom
+files[] = audit.module
+core = 7.x
+datestamp = "1416429488"
+

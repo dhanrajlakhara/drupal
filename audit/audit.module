@@ -1,0 +1,737 @@
+<?php
+define('SCHOOL_AUDIT_USER_DATA', 'school_audit_user_data');
+define('SCHOOL_AUDIT_INFO', 'school_audit_info');
+/**
+ * Implements hook_menu().
+ */
+function audit_menu() {
+  $items = array();
+
+  $items['school-audit'] = array(
+    'title' => 'School Audit',
+    //'access callback' => TRUE,
+    'page callback' => 'tabs',
+    'access arguments' =>array('school audit access module'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  // Make an additional tab called "Tab 2" on "Foo settings"
+  $items['school-audit/tab1'] = array(
+    'title' => 'Questions',
+    //'access callback' => TRUE,
+    'page callback' => 'tabs2',
+    'access arguments' =>array('school audit access module'),
+    'type' => MENU_LOCAL_TASK,
+  );
+  $items['school-audit/tab2'] = array(
+    'title' => 'Result',
+    'page callback' => 'tabs3',
+    //'access callback' => TRUE,
+    'access arguments' =>array('school audit access module'),
+    'type' => MENU_LOCAL_TASK,
+  );
+  $items['admin/config/audit'] = array (
+    'title' => 'School Audit User list',
+    'page callback' => 'school_audit_user_list',
+    'access arguments' => array('access administration pages'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+    return $items;
+}
+
+/**
+ * Implementation of hook_perm() function.
+*/
+function audit_permission() {
+  return array(
+    'school audit access module' => array(
+      'title' => t('school audit access module'),
+      'description' => t('school audit'),
+    ),
+  );
+}
+
+/*
+ * First tab callback.
+ */
+function tabs() {
+  global $user;
+  drupal_goto('school-audit/tab1');
+  return '';
+}
+
+/*
+ * Second tab callback.
+ */
+function tabs2() {
+  global $user;
+  $webfrom_result = select_audit_information($user->uid, 'user_id');
+  if(empty($webfrom_result)) {
+    //drupal_goto('school-audit/tab1');
+  }
+  $output = '';
+  $output = drupal_render(drupal_get_form('school_audit_questions_form'));
+  return $output;
+}
+
+/*
+ * Third tab callback.
+ */
+function tabs3() {
+  global $user;
+  $state_average = school_audit_state_average($user->uid, 'state');
+  $national_average = school_audit_state_average($user->uid, 'national');
+  $school_audit = count_school_points($user->uid);
+    if(!empty($school_audit)) {
+      $count = 1;
+      foreach($school_audit as $key => $value) {
+        $theme = taxonomy_term_load($key);
+        $term_name = $theme->name;
+        $paragraph[$term_name] = audit_result_message($theme->tid, $value);
+        $string .= '_'.$term_name.','.$national_average[$key].','.$state_average[$key].', '.$value.'';
+        $count++;
+      }
+      $account = user_load($user->uid);
+      $fname = (!empty($account->field_first_name['und'][0]['value']) ? $account->field_first_name['und'][0]['value'] : '');
+      $lname = (!empty($account->field_last_name['und'][0]['value']) ? $account->field_last_name['und'][0]['value'] : '');
+      $school_name = (!empty($account->field_school_organisation_name['und'][0]['value']) ? $account->field_school_organisation_name['und'][0]['value'] : '');
+      $name = $fname. ' '.$lname;
+      $data = "Theme, National Average, State Average, Your School".$string; 
+      drupal_add_js('https://www.google.com/jsapi', 'external');
+      drupal_add_js(drupal_get_path('module', 'audit') .'/graph.js');
+      drupal_add_js(array('audit' => array('BaseUrl' => $data)), 'setting');
+      $height = 100*$count;
+      $output .= '<div class="tab-cont">';
+      $output .= '<div class="audit-fname"><span>Name:</span> '.$name.'</div>';
+      $output .= '<div class="audit-school-name"><span>School:</span> '.$school_name.'</div>';
+      $output .= '<div class="col-1-2"><div id="barchart_material" class="chart" style="height:'.$height.'px"></div></div>';
+      //show message
+      if(!empty($paragraph)) {
+        foreach($paragraph as $key => $value) {
+          if(!empty($value)) {
+            $output .= '<br />';
+            $output .= '<div class="heading-audit">'. $key. '</div>';
+            $output .= $value;
+          }
+        }
+      }
+    $output .= '</div>';
+	  return $output;
+    }
+    else {
+      return '<div class="empty-msg"><b>No result found.</b></div>';
+    }
+
+}
+
+function school_audit_questions_form() {
+  global $user;
+  $taxonomy_data = taxonomy_get_tree('11', $parent = 0, $max_depth = NULL);
+  if(!empty($taxonomy_data)) {
+    $i = 1;
+    foreach($taxonomy_data as $key => $theme) {
+      $term_id = $theme->tid;
+      $term_name = $theme->name;
+      $result = audit_questions_list($term_id);
+      $options = options_list();
+      if(!empty($result)) {
+        foreach ($result as $record) {
+          $data = array('question_id' => $record['nid'], 'user_id' => $user->uid, 'term_id' => $term_id);
+          $result = select_school_audit_complete_user_data($data, SCHOOL_AUDIT_USER_DATA);
+          $answer = (!empty($result) ? $result['answer'] : '');
+          $form['question_'.$record['nid']] = array(
+            '#type' => 'markup',
+            '#markup' =>'<h3 class="node__title node-title">'.$i.'. '.$record['title'].'</h3>',
+          );
+          $form['answer_'.$record['nid']] = array(
+            '#type' => 'radios',
+            '#default_value' => $answer,
+            '#options' => $options,
+            '#prefix' => '<div class="audit-questions">',
+            '#suffix' => '</div>'
+          );
+          $form['term_'.$record['nid']] = array(
+            '#type' => 'hidden',
+            '#value' => $term_id
+          );
+          $i++;
+        }
+      }
+    }
+    $form['submit'] = array(
+      '#type' => 'submit',
+      '#value' => t('Next'),
+    );
+  }
+  return $form;
+}
+
+/*
+ * Submit form
+ */
+function school_audit_questions_form_submit($form, &$form_state) {
+  global $user;
+  $save = '';
+  if($user->uid != '') {
+    $taxonomy_data = taxonomy_get_tree('11', $parent = 0, $max_depth = NULL);
+    if(!empty($taxonomy_data)) {
+      foreach($taxonomy_data as $key => $theme) {
+        $term_id = $theme->tid;
+        $term_name = $theme->name;
+        $result = audit_questions_list($term_id);
+        foreach ($result as $record) {
+          $answer =  $form_state['values']['answer_'.$record['nid']];
+          $data = array('question_id' => $record['nid'], 'answer' => $answer, 'user_id' => $user->uid, 'term_id' => $term_id);
+          if(!empty($answer)) {
+            $satus = select_school_audit_user_data($data, SCHOOL_AUDIT_USER_DATA);
+            if(!empty($satus)) {
+              update_school_audit_user_data($data, SCHOOL_AUDIT_USER_DATA);
+            }
+            else {
+              save_school_audit_data($data, SCHOOL_AUDIT_USER_DATA);
+            }
+            $save = 1;
+          }
+        }
+      }
+    }
+    if($save == 1) {
+      $status = select_audit_information($user->uid, 'user_id');
+      if(empty($status)) {
+        $state = user_information($user->uid, 'state');
+        $data = array('state' => $state, 'user_id' => $user->uid);
+        save_school_audit_data($data, SCHOOL_AUDIT_INFO);
+      }
+    }
+   drupal_goto('school-audit/tab2');
+  }
+}
+
+function audit_theme() {
+  return array('school_audit_questions_form' => array('render element' => 'form'));
+}
+
+function theme_school_audit_questions_form($variables) {
+
+  $output = '';
+  $form = $variables['form'];
+  $taxonomy_data = taxonomy_get_tree('11', $parent = 0, $max_depth = NULL);
+  if(!empty($taxonomy_data)) {
+    $i = 1;
+    foreach($taxonomy_data as $key => $theme) {
+      $term_id = $theme->tid;
+      $term_name = $theme->name;
+      $result = audit_questions_list($term_id);
+      $class = 'whitebg';
+      $output .= '<div class ="fieldset-audit">';
+     // $output .= '<div class ="theme-name">'.$term_name.'</div>';
+      foreach ($result as $record) {
+        $class_name = (($i % 2) == 0 ? $class : '');
+        $output .= '<div class="audit-questions-row '.$class_name.'">';
+        $output .= drupal_render($form['question_'.$record['nid']]);
+        $output .= drupal_render($form['answer_'.$record['nid']]);
+        $output .= '</div>';
+        $i++;
+      }
+      $output .= '</div>';
+    }
+  }
+  $output .= drupal_render($form['submit']);
+  $output .= drupal_render_children($form);
+  return $output;
+}
+
+/*
+ * Save school audit data.
+ */
+function save_school_audit_data($data, $table) {
+  global $user;
+  if(!empty($data) && $user->uid!='' && !empty($table)) {
+    db_insert($table)
+    ->fields($data)->execute();
+  }
+}
+/*
+ * Update school audit information.
+ */
+function update_school_audit_info($data, $table = null) {
+  if(!empty($data) && !empty($table)) {
+  $update = db_update($table) ->fields(array('state' => $data['state']));
+    $update->condition('user_id', $data['user_id']);
+    $update->execute();
+  }
+}
+
+/*
+ * Update school data in table(school_audit_user_data)
+ */
+function update_school_audit_user_data($data, $table =NULL) {
+  global $user;
+  if(!empty($data) and $user->uid!='' && !empty($table)) {
+    $update = db_update($table) ->fields($data);
+    $update->condition('user_id',$data['user_id']);
+    $update->condition('question_id', $data['question_id']);
+    $update->condition('term_id', $data['term_id']);
+    $update->execute();
+  }
+}
+
+/*
+ * Check data in table(school_audit_user_data) if exists.
+ */
+function select_school_audit_user_data($data, $table = NULL) {
+  if(!empty($data)) {
+   $id = db_select($table, 'audit')
+      ->fields('audit',array('id'))
+      ->condition('user_id', $data['user_id'])
+      ->condition('question_id', $data['question_id'])
+      ->condition('term_id', $data['term_id'])
+      ->execute()->fetchField();
+  }
+  if(!empty($id)) {
+    return $id;
+  }
+  else {
+    return FALSE;
+  }
+}
+
+/*
+ * Select school audit information.
+ */
+function select_audit_information($uid, $field) {
+  if(!empty($uid) && !empty($field)) {
+   $data = db_select('school_audit_info', 'audit')
+      ->fields('audit',array($field))
+      ->condition('user_id', $uid)
+      ->execute()->fetchField();
+  }
+  if(!empty($data)) {
+    return $data;
+  }
+  else {
+    return FALSE;
+  }
+}
+
+
+
+/*
+ * Select all fields values from info table.
+ */
+function select_school_audit_complete_info($uid, $table = null) {
+  $records = array();
+    if(!empty($uid) && !empty($table)) {
+    $query = db_select($table, 'audit');
+      $query->fields('audit');
+      $query->condition('user_id', $uid);
+      $result = $query->execute();
+      $records = $result->fetchAssoc();
+    }
+  if(!empty($records)) {
+    return $records;
+  }
+  else{
+    return FALSE;
+  }
+}
+
+/*
+ * Select all fields values from table(school_audit_user_data).
+ */
+function select_school_audit_complete_user_data($data, $table = null) {
+  $records = array();
+    if(!empty($data) && !empty($table)) {
+    $query = db_select($table, 'audit');
+      $query->fields('audit');
+      $query->condition('user_id', $data['user_id']);
+      $query->condition('question_id', $data['question_id']);
+      $query->condition('term_id', $data['term_id']);
+      $result = $query->execute();
+      $records = $result->fetchAssoc();
+    }
+  if(!empty($records)) {
+    return $records;
+  }
+  else{
+    return FALSE;
+  }
+}
+
+/*
+ * Get the list of audit questions
+ */
+function audit_questions_list($term_id) {
+  $query = db_select('node', 'node');
+  $query->fields('node', array('nid', 'title'));
+  $query->innerJoin(' field_data_field_school_audit_theme', 'theme', 'node.nid = theme.entity_id');
+  $query->condition('node.type', array('audit_questions'));
+  $query->condition('node.status', 1,"=");
+  $query->orderBy('node.created', 'DESC');
+  $query->condition('theme.field_school_audit_theme_tid', $term_id,"=");
+  $query->condition('theme.bundle', 'audit_questions',"=");
+  $result = $query->execute();
+  $counter = 1;
+  while($record = $result->fetchAssoc()) {
+    $data[] = array('nid' => $record['nid'], 'title' => $record['title']);
+  }
+  if(!empty($data)) {
+    return $data;
+  }
+  else {
+    return false;
+  }
+}
+
+/*
+ * Options list.
+ */
+function options_list() {
+  $options = array(
+  '1' => 'Strongly Agree', 
+  '2' =>'Agree',
+  '3' => 'Disagree', 
+  '4' => 'Strongly Disagree', 
+  '5' => "Don't Know");
+  return $options;
+}
+
+/*
+ * Number of points
+ */
+function number_of_points($answer) {
+  switch ($answer) {
+    case 1:
+      $weight = variable_get('answer_weight_'.$answer);
+      $value = (!empty($weight) ? $weight : '');
+      return $value;
+      break;
+    case 2:
+      $weight = variable_get('answer_weight_'.$answer);
+      $value = (!empty($weight) ? $weight : '');
+      return $value;
+      break;
+    case 3:
+      $weight = variable_get('answer_weight_'.$answer);
+      $value = (!empty($weight) ? $weight : '');
+      return $value;
+      break;
+    case 4:
+      $weight = variable_get('answer_weight_'.$answer);
+      $value = (!empty($weight) ? $weight : '');
+      return $value;
+      break;
+    case 5:
+      $weight = variable_get('answer_weight_'.$answer);
+      $value = (!empty($weight) ? $weight : '');
+      return $value;
+      break;
+    default:
+      return "0";
+  } 
+}
+
+/*
+ * Count Your school points and draw graph.
+ */
+function count_school_points($user_id) {
+  global $user;
+  $data = array('user_id' => $user->uid);
+  $taxonomy_data = select_school_audit_user_themes($data, SCHOOL_AUDIT_USER_DATA);
+  if(!empty($taxonomy_data)) {
+    foreach($taxonomy_data as $key => $termid) {
+      $term_id = $termid;
+      $data = array('user_id' => $user_id, 'term_id' => $term_id);
+      $score = select_school_audit_result_data($data, SCHOOL_AUDIT_USER_DATA);
+      if(!empty($score)) {
+        $result[$term_id] = $score;
+      }
+    }
+    if(!empty($result)) {
+      return $result;
+    }
+  }
+  return false;
+}
+
+/*
+ * Select all field from table(school_audit_user_data).
+ */
+function select_school_audit_result_data($data, $table = null) {
+  $records = array();
+    if(!empty($data) && !empty($table)) {
+    $query = db_select($table, 'audit');
+      $query->fields('audit', array('question_id','answer'));
+      $query->condition('user_id', $data['user_id']);
+      $query->condition('term_id', $data['term_id']);
+      $result = $query->execute();
+      
+      while($record = $result->fetchAssoc()) {
+        $records[$record['question_id']] = $record['answer'];
+      }
+    }
+    $total_points = '';
+  if(!empty($records)) {
+    foreach($records as $key => $value) {
+      $weight =  select_question_weight($key);
+      $answer_weight =  number_of_points($value);
+      $total_points = $weight*$answer_weight + $total_points;
+    }
+    return $total_points;
+  }
+  else{
+    return FALSE;
+  }
+}
+
+/*
+ * Select question weight from audit question content type.
+ */
+function select_question_weight($nid) {
+    $records = array();
+    if(!empty($nid)) {
+    $weight = db_select('field_data_field_audit_weight', 'weight')
+      ->fields('weight',array('field_audit_weight_value'))
+      ->condition('entity_id', $nid)
+      ->execute()->fetchField();
+    }
+  if(!empty($weight)) {
+    return $weight;
+  }
+  else{
+    return FALSE;
+  }
+}
+
+/*
+ * Select login user terms name.
+ * Table(school_audit_user_data)
+ */
+function select_school_audit_user_themes($data, $table = null) {
+  if(!empty($data) && !empty($table)) {
+    $query = db_select($table, 'audit');
+    $query->fields('audit', array('term_id'))->distinct();
+    $query->condition('user_id', $data['user_id']);
+    $result = $query->execute();
+    while($record = $result->fetchAssoc()) {
+      $records[$record['term_id']] = $record['term_id'];
+    }
+    if(!empty($records)) {
+      return $records;
+    }
+    else {
+      
+    }
+  }
+  return false;
+}
+
+/**
+ * Implements hook_node_delete().
+ */
+function audit_node_delete($node) {
+  if($node->type == 'audit_questions') {
+    db_delete(SCHOOL_AUDIT_USER_DATA)
+    ->condition('question_id', $node->nid)
+    ->execute();
+  }
+}
+
+/**
+ * Implements hook_taxonomy_term_delete().
+ */
+function audit_taxonomy_term_delete($term) {
+  if($term->vid == '11') {
+    db_delete(SCHOOL_AUDIT_USER_DATA)
+    ->condition('term_id', $term->tid)
+    ->execute();
+  }
+}
+
+/**
+ * Implements hook_user_delete().
+ */
+function audit_user_delete($account) {
+  // delete from info table
+  db_delete(SCHOOL_AUDIT_INFO)
+    ->condition('user_id', $account->uid)
+    ->execute();
+  // delete from addut user data table.
+  db_delete(SCHOOL_AUDIT_USER_DATA)
+    ->condition('user_id', $account->uid)
+    ->execute();
+}
+
+/*
+ * Calculate school audit state average.
+ */
+function school_audit_state_average($uid, $name = null) {
+  $total = '';
+  global $user;
+  if(!empty($uid) && !empty($name)) {
+    $state = user_information($user->uid, 'state');
+    $data = array('state' => $state, 'user_id' => $uid);
+    $total_users = total_schools_audit_user_state($data, SCHOOL_AUDIT_INFO, $name);
+    if(!empty($total_users)) {
+      $count = 1;
+      foreach($total_users as $key => $value) {
+        $school_points = count_school_points($value);
+        $taxonomy_data = select_school_audit_user_themes($data, SCHOOL_AUDIT_USER_DATA);
+        foreach($taxonomy_data as $keys => $term_id) {
+          $total[$term_id] = $school_points[$term_id] + $total[$term_id];
+          $total_points[$term_id] = $total[$term_id]/$count;
+        }
+        $count++;
+      }
+      return $total_points;
+    }
+  }
+  return false;
+}
+
+/*
+ * Select total schools in the state.
+ */
+function total_schools_audit_user_state($data, $table = null, $condition = null) {
+  if(!empty($data) && !empty($table)) {
+    $query = db_select($table, 'audit');
+    $query->fields('audit', array('user_id'));
+    if($condition == 'state') {
+      $query->condition('state', $data['state']);
+    }
+    $result = $query->execute();
+    while($record = $result->fetchAssoc()) {
+      $records[$record['user_id']] = $record['user_id'];
+    }
+    if(!empty($records)) {
+      return $records;
+    }
+    else {
+      return false;
+    }
+  }
+  return false;
+}
+
+/*
+ * School Audit user list in admin.
+ */
+function school_audit_user_list() {
+  $result = select_school_audit_all_users(SCHOOL_AUDIT_INFO);
+  $header = array(
+    array('data' => t('Link')),
+    array('data' => t('First Name')),
+    array('data' => t('Last Name')),
+    array('data' => t('School Name')),
+    array('data' => t('State')),
+  );
+  if(!empty($result)) {
+    foreach($result as $key => $data) {
+      $state = realstete_options($data['state']);
+      $info = user_information($data['user_id'], 'all');
+      array_push($info, $state);
+      $rows[] = $info;
+  }
+  }
+  if(!empty($rows)) {
+    $output = theme('table', array('header' => $header, 'rows' => $rows, 'attributes' => array('id' => 'sort-table')));
+    $output .= theme('pager');
+  }
+  else {
+    $output .= t("No results found.");
+  }
+  return $output;
+}
+
+/*
+ * Select all fields values from info table.
+ */
+
+function select_school_audit_all_users($table = null) {
+  $records = array();
+    if(!empty($table)) {
+    $query = db_select($table, 'audit');
+      $query->fields('audit');
+      $result = $query->execute();
+       while($record = $result->fetchAssoc()) {
+        $records[] = $record;
+       }
+    }
+    
+  if(!empty($records)) {
+    return $records;
+  }
+  else{
+    return FALSE;
+  }
+}
+
+/**
+ * Implements hook_user_update().
+ */
+function audit_user_update(&$edit, $account, $category) {
+  $status = select_audit_information($account->uid, 'user_id');
+  if(!empty($status)) {
+  $state = $account->field_registration_state['und'][0]['value'];
+  $data = array('state' => $state, 'user_id' => $account->uid);
+  update_school_audit_info($data, SCHOOL_AUDIT_INFO);
+  }
+}
+
+function user_information($uid, $field) {
+  if(!empty($uid)) {
+    $account = user_load($uid);
+    if($field == 'state') {
+      $value = (isset($account->field_registration_state['und'][0]['value']) ? $account->field_registration_state['und'][0]['value'] : '');
+    }
+    if($field == 'all') {
+      $fname = (isset($account->field_first_name['und'][0]['value']) ? $account->field_first_name['und'][0]['value'] : '');
+      $lname = (isset($account->field_last_name['und'][0]['value']) ? $account->field_last_name['und'][0]['value'] : '');
+      $school_name = (isset($account->field_school_organisation_name['und'][0]['value']) ? $account->field_school_organisation_name['und'][0]['value'] : '');
+      $link = l('View', 'user/' . $account->uid);
+      $value = array( $link, $fname, $lname, $school_name);
+    }
+  }
+  if(!empty($value)) {
+    return $value;
+  }
+  else {
+    return FALSE;
+  }
+}
+
+/*
+ * School Audit message on result page.
+ */
+function audit_result_message($term_id, $points) {
+  $output = '';
+  if(!empty($term_id) && !empty($points)) {
+    $query = db_select('node', 'node');
+    $query->fields('node', array('nid', 'title'));
+    $query->innerJoin('field_data_field_audit_result_theme', 'theme', 'node.nid = theme.entity_id');
+    $query->condition('node.type', array('audit_theme_result'));
+    $query->condition('node.status', 1,"=");
+    $query->orderBy('node.created', 'DESC');
+    $query->condition('theme.field_audit_result_theme_tid ', $term_id,"=");
+    $query->condition('theme.bundle', 'audit_theme_result',"=");
+    $result = $query->execute();
+    $counter = 1;
+    while($record = $result->fetchAssoc()) {
+      $node = node_load($record['nid']);
+      $number =  $node->field_result_number_first['und'][0]['value'];
+      $output .= '<h3>'.$node->title.'</h3>';
+      if($points <= $number) {
+        $output .= '<div>'.$node->body['und'][0]['value'].'</div>';
+      }
+      else {
+        $output .= '<div>'.$node->field_message_second['und'][0]['value'].'</div>';
+      }
+      $data = $output;
+    }
+    if(!empty($data)) {
+      return $data;
+    }
+    else {
+      return false;
+    }
+  }
+}
